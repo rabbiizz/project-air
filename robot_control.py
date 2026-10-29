@@ -44,11 +44,22 @@ class MG400:
         return sock.recv(1024).decode("utf-8")
 
     def moveL(self, x, y, z, r=0):
+        """เคลื่อนที่แบบเส้นตรง (MovL)"""
         if self.use_real_robot:
             cmd = f"MovL({x},{y},{z},{r})"
             self.send_command(self.client, cmd)
         else:
-            print(f"[MOCK MOVE] X={x:.2f}, Y={y:.2f}, Z={z:.2f}, R={r:.2f}")
+            print(f"[MOCK MOVE L] X={x:.2f}, Y={y:.2f}, Z={z:.2f}, R={r:.2f}")
+
+    # [NEW] เคลื่อนที่แบบ Joint (MovJ) ให้ main.py เรียกผ่าน robot.moveJ()
+    # หุ่นคำนวณเส้นทางทีละแกนเอง ไม่บังคับให้วิ่งเป็นเส้นตรง จึงเลี่ยง Inverse kinematics error ระหว่างทางได้
+    def moveJ(self, x, y, z, r=0):
+        """เคลื่อนที่แบบ Joint (MovJ) ไปยังพิกัด X, Y, Z, R"""
+        if self.use_real_robot:
+            cmd = f"MovJ({x},{y},{z},{r})"
+            self.send_command(self.client, cmd)
+        else:
+            print(f"[MOCK MOVE J] X={x:.2f}, Y={y:.2f}, Z={z:.2f}, R={r:.2f}")
 
     # เพิ่มใน class MG400 (source 2)
     def get_pose(self):
@@ -69,6 +80,68 @@ class MG400:
     def set_gripper(self, state):
         cmd = f"DigitalOutputs(1,{state})"
         self.send_command(self.client, cmd)
+
+    # ============================================================
+    # [NEW] Digital Output ของหัวดูด
+    #   DO1 = Vacuum   (ดูด)
+    #   DO2 = Pressure (เป่าลมปล่อยชิ้นงาน)
+    # ใช้คำสั่ง DigitalOutputs(index,state) แบบเดียวกับ set_gripper เดิม
+    # ============================================================
+    DO_VACUUM = 1
+    DO_PRESSURE = 2
+
+    # firmware แต่ละรุ่นใช้ชื่อคำสั่งไม่เหมือนกัน (DigitalOutputs ตอบ -10000 = ไม่รู้จักคำสั่ง)
+    # ลองตามลำดับ แล้วจำคำสั่งแรกที่หุ่นตอบรหัส 0 (สำเร็จ) ไว้ใช้ต่อ
+    _DO_COMMANDS = ("DO", "DOExecute", "DigitalOutputs")
+    _do_cmd = None
+
+    def set_do(self, index, state):
+        """สั่ง Digital Output: index = หมายเลข DO, state = 1 (ON) / 0 (OFF)"""
+        state = 1 if state else 0
+        if not self.use_real_robot:
+            print(f"[MOCK DO] DO{index} = {state}")
+            return ""
+        names = [self._do_cmd] if self._do_cmd else list(self._DO_COMMANDS)
+        res = ""
+        for name in names:
+            res = self.send_command(self.client, f"{name}({index},{state})")
+            # [NEW] พิมพ์คำตอบของหุ่นทุกครั้ง เพื่อดูว่า DO ทำงานจริงหรือไม่
+            print(f"[DO] ส่ง {name}({index},{state}) -> หุ่นตอบ: {res.strip()}")
+            if res.strip().split(",")[0] == "0":
+                if self._do_cmd is None:
+                    self._do_cmd = name
+                    print(f"[INFO] สั่ง Digital Output ด้วยคำสั่ง {name}(index,status)")
+                return res
+        print(f"[WARNING] สั่ง DO{index} = {state} ไม่สำเร็จ ตอบกลับ: {res.strip()}")
+        return res
+
+    def vacuum_on(self):
+        """DO1 Vacuum ON"""
+        return self.set_do(self.DO_VACUUM, 1)
+
+    def vacuum_off(self):
+        """DO1 Vacuum OFF"""
+        return self.set_do(self.DO_VACUUM, 0)
+
+    def pressure_on(self):
+        """DO2 Pressure ON"""
+        return self.set_do(self.DO_PRESSURE, 1)
+
+    def pressure_off(self):
+        """DO2 Pressure OFF"""
+        return self.set_do(self.DO_PRESSURE, 0)
+
+    def suction_pick(self):
+        """ดูดชิ้นงาน: Pressure OFF -> Vacuum ON"""
+        self.pressure_off()
+        self.vacuum_on()
+
+    def suction_release(self, blow_time=0.5):
+        """ปล่อยชิ้นงาน: Vacuum OFF -> Pressure ON (เป่าลม blow_time วินาที) -> Pressure OFF"""
+        self.vacuum_off()
+        self.pressure_on()
+        time.sleep(blow_time)
+        self.pressure_off()
 
     def close(self):
         if self.use_real_robot:
